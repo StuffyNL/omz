@@ -1,0 +1,210 @@
+#!/usr/bin/perl
+# ------------------------------------------------------------------------------
+# 'omz' version: 1.0.7
+# Copyright (c) 2016
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+#
+# This program is distributed in the hope it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+#
+# ------------------------------------------------------------------------------
+
+# /////////////////////////////////// #
+# //////////////  USE  ////////////// #
+# /////////////////////////////////// #
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use Term::ANSIColor qw(:constants);
+use Term::ReadKey;
+use File::Path;
+use File::Basename;
+
+
+# /////////////////////////////////// #
+# ///////// Own SUBS //////////////// #
+# /////////////////////////////////// #
+
+sub read_files {
+  my $path = shift; my $rcrs = shift; my @fndfiles;
+  opendir(DIR, $path) or die $!; my @files = map { $path . '/' . $_ } grep { !/^\.{1,2}$/ } readdir (DIR); closedir(DIR);
+  foreach my $file (@files) { if(-d "$file") { if($rcrs eq 1) { push @files, read_files($file, $rcrs); } } else { push @fndfiles, $file; } }
+  return @fndfiles;
+  }
+
+sub filter_files {
+  my ($ext) = shift; my @file  = @_; my @exts  = split(',', $ext); my @ret;
+  for (@file) { my $f = $_; foreach my $v (@exts) { my $e = ($f =~ m/([^.]+)$/)[0]; $e = lc $e; if($e eq $v) { push @ret, $f; } } }
+  return @ret;
+  }
+
+sub MyExec {
+  my ($exe) = shift; my ($dbg) = shift; my (@ret) = ''; if($dbg eq 1) { MyPrint("\nExecute : ", 1); print qq($exe \n); } else { @ret = qx/$exe/; }
+  return @ret;
+  }
+
+sub MyPrint {
+  my ($txt)  = shift; my ($bld)  = shift; if($bld eq 1) { print BOLD, $txt, RESET; } else { print($txt); }
+  }
+
+sub niceSize {
+  my $fs = $_[0]; my $dp = $_[1]; my $u = 0; my @units = ('bytes','kB','MB','GB','TB','PB','EB','ZB','YB');
+  $dp = ($dp > 0) ? 10**$dp : 1; while($fs > 1024) { $fs /= 1024; $u++; }
+  if($units[$u]) { return (int($fs*$dp)/$dp)." ".$units[$u]; } else { return int($fs); }
+  }
+
+
+# /////////////////////////////////// #
+# ///////// Used Vars /////////////// #
+# /////////////////////////////////// #
+
+my $dir   = '.';   my $ext     = '';   my $txt     = '';  my $bitr  = '';    my $spl   = 0;    my $cal   = 0;  my $line  = 0;
+my $hlp   = 0;     my $del_wav = 0;    my $del_org = 0;   my $s     = ',';   my @files = (''); my $debug = 0;  my $rcrsv = 0;
+
+my $file_cnt = 0;    my $file_siz_old = 0;    my $file_siz_new = 0;
+
+my @binpath = ('/usr/bin/','/usr/sbin/','/usr/local/bin/');
+my @bins    = ('flac','mac','oggdec','mpg123','mplayer','lame');
+my $exten   = 'flac, ape, mpc, wma, m4a, wav, wv, ogg, mp4, ac3, dts, aif, aiff, mp3';
+my $bitrat  = '128, 160, 192, 224, 256, and 320';
+
+my $result  = GetOptions ("ext|e=s"   => \$ext, "bitrate|b=s" => \$bitr, "delete_wav|w" => \$del_wav, "delete_org|o" => \$del_org,
+                          "convall|a" => \$cal, "split|s"     => \$spl,  "recursive|r" => \$rcrsv,    "help|h"  => \$hlp, "test|t"  => \$debug);
+
+if ($hlp eq 1) {
+  MyPrint("Usage: ", 1);
+  MyPrint("omz -e ext -b 320 -s -d \n-e extension of the file(s). Possible extensions: ".$exten."\n", 0);
+  MyPrint("-b set bitrate, for encoding in Constand Bitrate (CBR). Possible values: ".$bitrat.". (Default is VBR 320, quality = 0)\n", 0);
+  MyPrint("-s split the mp3 file with the available cue-file. ", 0);
+  MyPrint("(When you have multiple files that needs to be splitted, make sure that they are in seperate directory's!)\n", 0);
+  MyPrint("-w Delete wav files. Standard the .wav files won't be deleted\n-o Delete the original file, after conversion.\n", 0);
+  MyPrint("-t Test / Debug mode. Only the commands are printed, nothing will be executed.\n-r Read al the Dir's recursive\n\n", 0);
+  exit;
+  };
+
+if ($cal eq 1) {
+  $ext = 'flac,ape,mpc,wma,m4a,wav,wv,ogg,mp4,ac3,dts,aif,aiff';
+  }
+else {
+  if ($ext eq '') {
+    MyPrint("No file-extension given.\nPlease type the file extension here, of the files you want to convert.\nPossible extensions are : ".$exten."\n", 0);
+    $ext = <STDIN>;
+    chomp($ext);
+    }
+  };
+
+
+# /////////////////////////////////// #
+# /////////  Some checks //////////// #
+# /////////////////////////////////// #
+
+my ($col, $row, $wpix, $hpix) = GetTerminalSize();
+$line = '-' x ($col - 1);
+
+if ($debug eq 1) { MyPrint("\n\nGet screen size :\n\n", 1); MyPrint("Rows     : ".$row."\nColomns  : ".$col."\nLine     : ".length($line)."\n", 0); }
+
+
+my $prg = '';
+foreach $b (@bins) {
+  my $ok  = 0;
+  foreach my $p (@binpath) { my $chk = $p.$b; if (-e ($p.$b)) { $prg .= $p.$b."\n"; $ok = 1; } }
+  if($ok ne 1) { $txt .= "- $b\n"; }
+  }
+if($debug eq 1) { MyPrint("\nPrograms found:\n\n", 1); MyPrint("$prg\n", 0); }
+if(length($txt) ne 0) { MyPrint("Error! Please install following before you continue:\n", 1); MyPrint($txt."\n", 0); exit; }
+
+if ($ext =~ /\Q$s\E/) {
+  my @a = split($s, $ext);
+  MyPrint("Searching for files with extention : ", 1);
+  foreach my $v (@a) { MyPrint("$v ", 0); }
+  }
+
+my @fsa   = read_files($dir, $rcrsv);
+if ($debug eq 1) {
+  MyPrint("\n\nFiles found in directory :\n\n", 1);
+  foreach my $r (@fsa) { MyPrint($r."\n", 0); }
+  }
+
+@files = filter_files($ext, @fsa);
+MyPrint("\n\nFiles found for processing :\n\n", 1);
+foreach my $r (@files) { MyPrint($r."\n", 0); }
+
+
+# /////////////////////////////////// #
+# //////////// ROUTINE ////////////// #
+# /////////////////////////////////// #
+
+my ($bitrate) = '';
+if($bitr eq '') { $bitrate = "-V 0"; } else { $bitrate = "-b ".$bitr; }
+
+
+foreach my $file (@files) {
+
+  MyPrint("\n$line\n", 0);
+
+  my $fext = ($file =~ m/([^.]+)$/)[0]; $fext = lc $fext;
+  my $nwfile;
+  my @outp = '';
+  
+  if ($fext eq 'flac') { ($nwfile = $file) =~ s/\.[fF][lL][aA][cC]$//; };
+  if ($fext eq 'ape')  { ($nwfile = $file) =~ s/\.[aA][pP][eE]$//;     };
+  if ($fext eq 'ogg')  { ($nwfile = $file) =~ s/\.[oO][gG][gG]$//;     };
+  if ($fext eq 'mp3')  { ($nwfile = $file) =~ s/\.[mM][pP]3$//;        };
+  if ($fext eq 'wma')  { ($nwfile = $file) =~ s/\.[wW][mM][aA]$//;     };
+  if ($fext eq 'mpc')  { ($nwfile = $file) =~ s/\.[mM][pP][cC]$//;     };
+  if ($fext eq 'm4a')  { ($nwfile = $file) =~ s/\.[mM]4[aA]$//;        };
+  if ($fext eq 'wv')   { ($nwfile = $file) =~ s/\.[wW][vV]$//;         };
+  if ($fext eq 'mp4')  { ($nwfile = $file) =~ s/\.[mM][pP]4$//;        };
+  if ($fext eq 'ac3')  { ($nwfile = $file) =~ s/\.[aA][cC]3$//;        };
+  if ($fext eq 'dts')  { ($nwfile = $file) =~ s/\.[dD][tT][sS]$//;     };
+  if ($fext eq 'aif')  { ($nwfile = $file) =~ s/\.[aA][iI][fF]$//;     };
+  if ($fext eq 'aiff') { ($nwfile = $file) =~ s/\.[aA][iI][fF][fF]$//; };
+  if ($fext eq 'wav')  { ($nwfile = $file) =~ s/\.[wW][aA][vV]$//;     };
+
+  my $oldfile = $file;           my $wavfile = $nwfile.'.wav';  my $statold = $oldfile;
+  my $cuefile = $nwfile.'.cue';  my $mp3file = $nwfile.'.mp3';  my $statmp3 = $mp3file;
+
+  $oldfile =~ s/([& ()`\[\];\'\"\$])/\\$1/g;  $wavfile =~ s/([& ()`\[\];\'\"\$])/\\$1/g;
+  $mp3file =~ s/([& ()`\[\];\'\"\$])/\\$1/g;  $cuefile =~ s/([& ()`\[\];\'\"\$])/\\$1/g;
+  
+  MyPrint("\nStarting decoding file : ", 1); MyPrint($file."\n", 0);
+
+  if ($fext eq 'flac')   { @outp = MyExec("flac -d ".$oldfile." -o ".$wavfile, $debug); }
+  elsif ($fext eq 'ape') { @outp = MyExec("mac ".$oldfile." ".$wavfile." -d", $debug);  }
+  elsif ($fext eq 'ogg') { @outp = MyExec("oggdec -o ".$wavfile." ".$oldfile, $debug);  }
+  elsif ($fext eq 'mp3') { @outp = MyExec("mpg123 -w ".$wavfile." ".$oldfile, $debug);  }
+  else { MyExec("mplayer -really-quiet -vo null -vc dummy -af resample=44100 -ao pcm:waveheader ".$oldfile, $debug); MyExec("mv audiodump.wav ".$wavfile, $debug); };
+
+  MyPrint("\nStarting encoding...  \n", 1); MyExec("lame -m s ".$bitrate." ".$wavfile." ".$mp3file, $debug); MyPrint("\nEncoding finished!\n", 1);
+
+  if ($spl eq 1) { MyPrint("\nSplitting MP3 file.\n", 1); MyExec("mp3splt -f -c ".$cuefile." -o '\@N\ \@p\ -\ \@t' ".$mp3file, $debug); }
+
+  if ($debug ne 1) {
+    my $fsiz_old = (stat($statold))[7];  my $fsiz_new = (stat($statmp3))[7];
+    $file_siz_old += $fsiz_old; $file_siz_new += $fsiz_new; $file_cnt++;
+    }
+
+  if ($fext ne 'wav' && $debug ne 1) {
+    if ($del_wav eq 0) { MyPrint("\nDelete .WAV file? (y/n) : ", 1); my $dw = <STDIN>; chomp($dw); if ($dw eq 'y') { $del_wav = 1; } }
+    if ($del_wav eq 1) { MyPrint("\nDeleted WAV file.\n", 1); MyExec("rm ".$wavfile, $debug); }
+    }
+
+  if ($del_org eq 1) { MyPrint("\nDeleting original file.\n", 1); MyExec("rm ".$oldfile, $debug); }
+
+  }
+
+if ($debug ne 1) {
+  $file_siz_old = niceSize($file_siz_old,3); $file_siz_new = niceSize($file_siz_new,3);
+  MyPrint("\n$line\n", 0); MyPrint("\n\nFiles converted : $file_cnt \nTotal filesize old files : $file_siz_old\nTotal filesize new files : $file_siz_new\n\n", 0);
+  }
