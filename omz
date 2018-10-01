@@ -1,0 +1,304 @@
+#!/usr/bin/perl
+###
+# ------------------------------------------------------------------------------
+# 'omz' version: 1.2.0
+# Copyright (c) 2015, 2016, 2017, 2018
+# Marjon H. <msmokey at gmail dot com>
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+#
+# This program is distributed in the hope it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+#
+# ------------------------------------------------------------------------------
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling);
+use Term::ANSIColor qw(:constants);
+use File::Path;
+use File::Basename;
+use Config::IniFiles;
+use Term::ReadKey;
+
+### All sub's
+sub read_files {
+  my $path = shift; my $rcrs = shift; my @fndfiles;
+  opendir(DIR, $path) or die $!;
+  my @files = map { $path . '/' . $_ } grep { !/^\.{1,2}$/ } readdir (DIR);
+  closedir(DIR);
+  foreach my $file (@files) {
+    if(-d $file) { push (@files, read_files($file, $rcrs)) if ($rcrs eq 1); }
+    else { push (@fndfiles, $file); }
+    }
+  return @fndfiles;
+  }
+ 
+sub filter_files {
+  my ($ext) = shift; my @file  = @_; my @exts  = split(',', $ext); my @ret;
+  for (@file) {
+    my $f = $_;
+    foreach my $v (@exts) {
+      my $e = ($f =~ m/([^.]+)$/)[0];
+      $e = lc $e;
+      if($e eq $v) { push @ret, $f; }
+      }
+    }
+  return @ret;
+  }
+
+sub MyExec {
+  my ($exe) = shift; my ($dbg) = shift; my (@ret) = '';
+  if($dbg eq 1) {
+    print BOLD WHITE, "Execute : ", RESET;
+    print YELLOW, qq($exe \n), RESET;
+    }
+  else { @ret = qx/$exe/; }
+  return @ret;
+  }
+
+sub MyPrint {
+  my ($txt) = shift;
+  my ($bld) = shift;
+  my ($color) = shift;
+  local $Term::ANSIColor::AUTORESET = 1;
+  if ($bld eq 0 && $color eq 0) { print BLACK, $txt; }          elsif ($bld eq 0 && $color eq 1) { print RED, $txt; }
+  elsif ($bld eq 0 && $color eq 2) { print GREEN, $txt; }       elsif ($bld eq 0 && $color eq 3) { print YELLOW, $txt; }
+  elsif ($bld eq 0 && $color eq 4) { print BLUE, $txt; }        elsif ($bld eq 0 && $color eq 5) { print MAGENTA, $txt; }
+  elsif ($bld eq 0 && $color eq 6) { print CYAN, $txt; }        elsif ($bld eq 0 && $color eq 7) { print WHITE, $txt; }
+  elsif ($bld eq 1 && $color eq 0) { print BOLD BLACK, $txt; }  elsif ($bld eq 1 && $color eq 1) { print BOLD RED, $txt; }
+  elsif ($bld eq 1 && $color eq 2) { print BOLD GREEN, $txt; }  elsif ($bld eq 1 && $color eq 3) { print BOLD YELLOW, $txt; }
+  elsif ($bld eq 1 && $color eq 4) { print BOLD BLUE, $txt; }   elsif ($bld eq 1 && $color eq 5) { print BOLD MAGENTA, $txt; }
+  elsif ($bld eq 1 && $color eq 6) { print BOLD CYAN, $txt; }   elsif ($bld eq 1 && $color eq 7) { print BOLD WHITE, $txt; }
+  else { print $txt; }
+  }
+  
+sub niceSize ($$) {
+  my ($fs, $dp) = @_;
+  my $u = 0;
+  my @units = ('bytes','kB','MB','GB','TB','PB','EB','ZB','YB');
+
+  $dp = ($dp > 0) ? 10**$dp : 1;
+  while ($fs > 1024) { $fs /= 1024; $u++; }
+  
+  if($units[$u]) { return (int($fs*$dp)/$dp)." ".$units[$u]; }
+  else { return int($fs); }
+  }
+
+sub EscChars {
+  my $txt = shift;
+  $txt =~ s/([!#=*,<>?~{}|& ()`\[\];\'\"\`\$])/\\$1/g;
+  return $txt;
+  }
+
+
+### All var's
+my ($prgr, $dir, $s, $txt, $bitr, $ext, $rcrsv, $cal, $spl, $del_wav, $del_org, $no_mp3, $list,
+    $wait, $help, $debug, $line, $f_count, $file_cnt, $file_siz_old, $file_siz_new)
+    = ($0, '.', ',', '', '', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+$prgr =~ s@.*/@@;
+
+my @fsa     = ();
+my @files   = ();
+
+my @binpath = ('/usr/bin/','/usr/sbin/','/usr/local/bin/');
+my @bins    = ('flac','mac','oggdec','mpg123','mplayer','lame');
+my $exten   = 'flac, ape, mpc, wma, m4a, wav, wv, ogg, ac3, dts, dff, aif, aiff, tak, tta, mp3';
+my $bitrat  = '128, 160, 192, 224, 256, and 320';
+
+
+### Load ini file and set language var's
+my $lang_ini = "/etc/omz/language_en.ini";
+my $cfg = Config::IniFiles->new( -file => $lang_ini);
+
+my $lng_helpa  = $cfg->val('help', 'LANG_HELP0');  my $lng_helpb  = $cfg->val('help', 'LANG_HELP1');
+my $lng_helpc  = $cfg->val('help', 'LANG_HELP2');  my $lng_helpd  = $cfg->val('help', 'LANG_HELP3');
+my $lng_helpea = $cfg->val('help', 'LANG_HELP4a'); my $lng_helpeb = $cfg->val('help', 'LANG_HELP4b');
+my $lng_helpf  = $cfg->val('help', 'LANG_HELP5');  my $lng_helpg  = $cfg->val('help', 'LANG_HELP6');
+my $lng_helph  = $cfg->val('help', 'LANG_HELP7');  my $lng_helpi  = $cfg->val('help', 'LANG_HELP8');
+my $lng_helpj  = $cfg->val('help', 'LANG_HELP9');
+my $lng_debug = $cfg->val('debug', 'LANG_DEBUG');  my $lng_scrsz  = $cfg->val('debug', 'LANG_SCRSZ');
+my $lng_nrows = $cfg->val('debug', 'LANG_ROWS');   my $lng_colms  = $cfg->val('debug', 'LANG_COLMS');
+my $lng_noext = $cfg->val('output', 'LANG_NOEXT'); my $lng_prgsf  = $cfg->val('output', 'LANG_PRGSF');
+my $lng_erins = $cfg->val('output', 'LANG_ERINS'); my $lng_shext  = $cfg->val('output', 'LANG_SHEXT');
+my $lng_filef = $cfg->val('output', 'LANG_FILEF'); my $lng_nfilf  = $cfg->val('output', 'LANG_NFILF');
+my $lng_filfc = $cfg->val('output', 'LANG_FILFC'); my $lng_filsf  = $cfg->val('output', 'LANG_FILSF');
+my $lng_nofld = $cfg->val('output', 'LANG_NOFLD'); my $lng_decfl  = $cfg->val('output', 'LANG_DECFL');
+my $lng_encfl = $cfg->val('output', 'LANG_ENCFL'); my $lng_encfn  = $cfg->val('output', 'LANG_ENCFN');
+my $lng_spltf = $cfg->val('output', 'LANG_SPLTF'); my $lng_nocue  = $cfg->val('output', 'LANG_NOCUE');
+my $lng_delwv = $cfg->val('output', 'LANG_DELWV'); my $lng_dlorg  = $cfg->val('output', 'LANG_DLORG');
+my $lng_fincf = $cfg->val('output', 'LANG_FINCF'); my $lng_fintg  = $cfg->val('output', 'LANG_FINTG');
+my $lng_togo  = $cfg->val('output', 'LANG_TOGO');  my $lng_allfin = $cfg->val('output', 'LANG_ALLF');
+my $lng_fconv = $cfg->val('output', 'LANG_FCONV'); my $lng_cont   = $cfg->val('output', 'LANG_CONT');
+my $lng_sizof = $cfg->val('output', 'LANG_SIZOF'); my $lng_siznf  = $cfg->val('output', 'LANG_SIZNF');
+my $lng_warn  = $cfg->val('output', 'LANG_WARN');  my $lng_done   = $cfg->val('output', 'LANG_DONE');
+
+
+
+### Get Options
+my $result  = GetOptions (
+                   "ext|e=s" => \$ext,           "recursive|r" => \$rcrsv,
+                   "convall|a" => \$cal,         "bitrate|b=s" => \$bitr,
+                   "split|s" => \$spl,           "delete_wav|d" => \$del_wav,  
+                   "delete_org" => \$del_org,    "only_wav|o" => \$no_mp3,
+                   "list_files|l" => \$list,     "wait|w" => \$wait,
+                   "help|h" => \$help,           "test|t" => \$debug
+                   );
+
+
+### Print helptext when needed
+if ($help eq 1) {
+  MyPrint("\n".$lng_helpa."\n\n", 1, 5);
+  MyPrint($prgr." ".$lng_helpb.$exten."\n".$prgr." ".$lng_helpc."\n".$prgr." ".$lng_helpd."\n".$prgr." ".$lng_helpea.$bitrat.$lng_helpeb."\n", 0, 6);
+  MyPrint($prgr." ".$lng_helpf."\n".$prgr." ".$lng_helpg."\n".$prgr." ".$lng_helph."\n".$prgr." ".$lng_helpi."\n".$prgr." ".$lng_helpj."\n\n", 0, 6);
+  exit;
+  };
+
+
+### Here the fun begins...
+MyPrint("\n".$lng_warn."\n", 0, 7);
+
+MyPrint("\n".$lng_debug."\n", 1, 2) if ($debug eq 1);
+
+if ($cal eq 1) { ($ext = $exten) =~ s/\s//g; }
+else { if ($ext eq '') { MyPrint($lng_noext.$exten."", 0, 5); $ext = <STDIN>; chomp($ext); } }
+
+my ($col, $row) = GetTerminalSize();
+$line = '-' x ($col - 1);
+if ($debug eq 1) { MyPrint("\n\n".$lng_scrsz."\n", 1, 5); MyPrint($lng_nrows.$row."\n".$lng_colms.$col."\n", 0, 6); }
+
+my $prg = '';
+foreach $b (@bins) {
+  my $ok = 0;
+  foreach my $p (@binpath) { my $chk = $p.$b; if (-e ($p.$b)) { $prg .= $p.$b."\n"; $ok = 1; } }
+  if($ok ne 1) { $txt .= "- $b"; }
+  }
+
+if($debug eq 1) { MyPrint("\n\n".$lng_prgsf."\n", 1, 5); MyPrint("$prg", 0, 6); }
+
+if(length($txt) ne 0) {
+  MyPrint("\n\n".$lng_erins."\n", 1, 5); MyPrint($txt."", 0, 6); exit;
+  }
+
+### Create file list
+if ($ext =~ /\Q$s\E/) {
+  my @a     = split($s, $ext); my $ext_c = 0; MyPrint("\n\n".$lng_shext, 1, 5);
+  foreach my $v (@a) { MyPrint(", ", 0, 6) if ($ext_c ne 0); MyPrint($v, 0, 6); $ext_c++; }
+  }
+
+@fsa     = read_files($dir, $rcrsv); @fsa     = sort @fsa;
+@files   = filter_files($ext, @fsa); $f_count = scalar(keys @files);
+
+if ($debug eq 1) {
+  MyPrint("\n\n".$lng_filef."\n", 1, 5); MyPrint($line."\n", 0, 7);
+  foreach my $r (@fsa) { MyPrint($r."\n", 0, 6); }
+  MyPrint($line."\n", 0, 7);
+  };
+
+if($f_count eq 0) { MyPrint("\n\n".$lng_nfilf."\n\n",0, 7); exit; }
+else {
+  MyPrint("\n\n".$lng_filfc."\n", 1, 5);
+  MyPrint($line."\n", 0, 7); foreach my $r (@files) { MyPrint($r."\n", 0, 6); } MyPrint($line."\n", 0, 7);
+  MyPrint("\n\n".$f_count." ".$lng_filsf."\n", 1, 4);
+  }
+
+if($bitr eq '') { $bitr = "-V 0"; } else { $bitr = "-b ".$bitr; }
+
+
+### convert routine for each file
+foreach my $file (@files) {
+
+  my $nwfile; my @outp;
+  my $fext = lc(($file =~ m/([^.]+)$/)[0]);
+
+  ($nwfile = $file) =~ s/\.[fF][lL][aA][cC]$// if ($fext eq 'flac'); ($nwfile = $file) =~ s/\.[aA][pP][eE]$//     if ($fext eq 'ape');
+  ($nwfile = $file) =~ s/\.[oO][gG][gG]$//     if ($fext eq 'ogg');  ($nwfile = $file) =~ s/\.[mM][pP]3$//        if ($fext eq 'mp3');
+  ($nwfile = $file) =~ s/\.[wW][mM][aA]$//     if ($fext eq 'wma');  ($nwfile = $file) =~ s/\.[mM][pP][cC]$//     if ($fext eq 'mpc');
+  ($nwfile = $file) =~ s/\.[mM]4[aA]$//        if ($fext eq 'm4a');  ($nwfile = $file) =~ s/\.[wW][vV]$//         if ($fext eq 'wv');
+  ($nwfile = $file) =~ s/\.[mM][pP]4$//        if ($fext eq 'mp4');  ($nwfile = $file) =~ s/\.[aA][cC]3$//        if ($fext eq 'ac3');
+  ($nwfile = $file) =~ s/\.[dD][tT][sS]$//     if ($fext eq 'dts');  ($nwfile = $file) =~ s/\.[dD][fF][fF]$//     if ($fext eq 'dff');
+  ($nwfile = $file) =~ s/\.[aA][iI][fF]$//     if ($fext eq 'aif');  ($nwfile = $file) =~ s/\.[aA][iI][fF][fF]$// if ($fext eq 'aiff');
+  ($nwfile = $file) =~ s/\.[tT][tT][aA]$//     if ($fext eq 'tta');  ($nwfile = $file) =~ s/\.[tT][aA][kK]$//     if ($fext eq 'tak');
+  ($nwfile = $file) =~ s/\.[wW][aA][vV]$//     if ($fext eq 'wav');
+
+  exit if ($nwfile eq '');
+
+  my $wavfile = $nwfile.".wav"; my $cuefile = $nwfile.".cue"; my $mp3file = $nwfile.".mp3";
+  my $oldfile = $file;          my $statold = $oldfile;       my $statmp3 = $mp3file;
+
+  $oldfile = EscChars($oldfile); $wavfile = EscChars($wavfile); $mp3file = EscChars($mp3file);
+  
+  MyPrint($line, 0, 7); MyPrint("\n\n".$lng_decfl, 1, 5); MyPrint($file."\n", 0, 6);
+
+  if ($fext eq 'flac')   { @outp = MyExec("flac -d ".$oldfile." -o ".$wavfile, $debug); }
+  elsif ($fext eq 'ape') { @outp = MyExec("mac ".$oldfile." ".$wavfile." -d", $debug);  }
+  elsif ($fext eq 'ogg') { @outp = MyExec("oggdec -o ".$wavfile." ".$oldfile, $debug);  }
+  elsif ($fext eq 'mp3') { @outp = MyExec("mpg123 -w ".$wavfile." ".$oldfile, $debug);  }
+  elsif ($fext ne 'wav') {
+    MyExec("mplayer -really-quiet -vo null -vc dummy -af resample=44100 -ao pcm:waveheader ".$oldfile, $debug);
+    MyExec("mv audiodump.wav ".$wavfile, $debug);
+    }
+  else { MyPrint($lng_nofld, 1, 1); };
+
+  if ($no_mp3 eq 0) {
+    MyPrint("\n".$lng_encfl."\n", 1, 5); MyExec("lame -m s ".$bitr." ".$wavfile." ".$mp3file, $debug); MyPrint($lng_encfn."\n\n", 1, 5);
+    }
+
+  if ($spl eq 1) {
+    if (-e $cuefile) {
+      MyPrint($lng_spltf."\n\n", 1, 5); $cuefile = EscChars($cuefile);
+      MyExec("mp3splt -f -c ".$cuefile." -o '\@N\ \@p\ -\ \@t' ".$mp3file, $debug);
+      }
+    else { MyPrint($lng_nocue."\n", 1, 1); }
+    };
+
+  if ($fext ne 'wav') {
+    if ($del_wav eq 1) {
+      MyPrint($lng_delwv."\n\n", 1, 4); MyExec("rm ".$wavfile, $debug);
+      };
+    }
+
+  my $pr_fsize = '';
+  if ($no_mp3 ne 1) {
+    if ($debug ne 1) {
+      my $fsiz_old = (stat($statold))[7]; my $fsiz_new = (stat($statmp3))[7]; $file_siz_old += $fsiz_old;
+      $file_siz_new += $fsiz_new; $file_cnt++; my $togo = $f_count-$file_cnt." ".$lng_togo;
+      $togo = "Last file" if ($togo eq "0 to go"); $pr_fsize = $lng_fincf.$file_cnt."/".$f_count." (".$togo.")";
+      }
+    }
+
+  if ($del_org eq 1) {
+    MyPrint($lng_dlorg."\n\n", 1, 4); my $delfile = EscChars($file); MyExec("rm ".$delfile, $debug);
+    }
+
+  MyPrint($pr_fsize."\n", 1, 5);
+  } # End foreach
+  
+
+if ($debug ne 1) {
+  $file_siz_old = niceSize($file_siz_old, 3); $file_siz_new = niceSize($file_siz_new, 3);
+  MyPrint("\n".$line, 0, 7);
+  MyPrint("\n\n".$lng_fconv.$file_cnt."\n".$lng_sizof.$file_siz_old."\n".$lng_siznf.$file_siz_new."\n\n", 0, 6);
+  }
+
+if ($wait ne 0) {
+  ReadMode('cbreak');
+  $|=1;
+  MyPrint($lng_cont, 1, 7);
+  my $key = getc;
+  ReadMode('normal');
+  };
+
+MyPrint($lng_done."\n\n", 1, 4);
+
+### End script.... :)
